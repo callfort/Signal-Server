@@ -1,0 +1,88 @@
+name: Sync Signal Repo (Daily Force Push)
+
+on:
+  schedule:
+    - cron: "0 0 * * *"  # Runs daily at midnight UTC
+  workflow_dispatch:       # Allows manual triggering
+  push:
+    branches:
+      - callfort/sync    # Restrict trigger to this branch
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: github.ref == 'refs/heads/callfort/sync'  # Restrict execution to this branch
+    steps:
+      - name: Checkout the current repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Ensures full history for syncing
+
+      - name: Set up Git
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+      - name: Get Repository Name
+        run: |
+          REPO_NAME=$(basename "${GITHUB_REPOSITORY}")
+          REPO_NAME="${REPO_NAME#*-}"  # Remove everything up to and including the first '-'
+          echo "REPO_NAME=${REPO_NAME}" >> $GITHUB_ENV
+
+      - name: Add Signal Remotes
+        run: |
+          git remote add signalapp "https://github.com/signalapp/${REPO_NAME}.git"
+          git remote add callfort "https://github.com/callfort/${REPO_NAME}.git"
+
+      - name: Fetch Latest Changes
+        run: |
+          git fetch --all --prune
+
+      - name: Force Sync Designated Branches
+        run: |
+          dev_repo="${REPO_NAME}"
+          upstream_org='signalapp'
+          remote_org="callfort"
+          
+          echo "🔄 Syncing branches from 🌍 [${upstream_org}] → 🏗️ [${remote_org}]..."
+        
+          # Step 1: Fetch all branches and tags from upstream
+          git fetch signalapp --tags --prune
+          
+          # Step 2: Sync all branches
+          for branch in $(git branch -r | grep "${upstream_org}/" | sed "s|${upstream_org}/||" ); do
+            echo "🌿 Processing branch: 🌱 **${branch}**"
+            
+            if git show-ref --verify --quiet "refs/heads/$remote_org/$branch"; then
+              echo "✅ Branch **${branch}** already exists in [${remote_org}]. 🔍 Checking for rebase in [${upstream_org}]..."
+            
+              # Check if history has diverged (A has been rebased)
+              if ! git merge-base --is-ancestor "${upstream_org}/${branch}" "${remote_org}/${branch}"; then
+                echo "⚠️ Rebase detected on 🔄 ${upstream_org}/${branch}! Resetting to ${upstream_org}’s branch... 🚨"
+                git checkout "${remote_org}/${branch}"
+                git reset --hard "${upstream_org}/${branch}"
+              else
+               echo "🚀 No rebase detected! Fast-forwarding ⏩ branch **${branch}**..."
+                git checkout "${remote_org}/${branch}"
+                git merge --ff-only "${upstream_org}/$branch"
+              fi
+            else
+              echo "🆕 Branch **${branch}** does not exist in [${remote_org}]. 📌 Creating and tracking it now..."
+              git checkout -b "${remote_org}/$branch" "${upstream_org}/${branch}"
+            fi
+            
+            git commit --allow-empty -m "SyncBot - skip workflows [skip ci]"
+            
+            # Step 3: Push updated branch (without triggering CI)
+            echo "📤 Pushing branch ${branch} to ${remote_org} repo ... 🚀"
+            GIT_COMMITTER_NAME="SyncBot" GIT_COMMITTER_EMAIL="syncbot@example.com" git push --force "${remote_org}" "refs/heads/${remote_org}/${branch}"
+        
+          done
+        
+          # Step 4: Sync all tags
+          echo "🏷️ Syncing all tags..."
+          git push "${remote_org}" --tags
+        
+          echo "✅ Sync complete! 🎉"
